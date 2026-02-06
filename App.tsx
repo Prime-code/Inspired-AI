@@ -15,11 +15,11 @@ const updateVerseDisplayFunction: FunctionDeclaration = {
   name: 'updateVerseDisplay',
   parameters: {
     type: Type.OBJECT,
-    description: 'Updates the display with a Bible verse.',
+    description: 'Updates the display with a Bible verse. Use this for both direct references and thematic/topic searches.',
     properties: {
       reference: { type: Type.STRING, description: 'The Bible verse reference (e.g., John 3:16).' },
       text: { type: Type.STRING, description: 'The verse text.' },
-      translation: { type: Type.STRING, description: 'The translation name.' },
+      translation: { type: Type.STRING, description: 'The translation name (e.g., NIV, KJV).' },
     },
     required: ['reference', 'text', 'translation'],
   },
@@ -53,21 +53,27 @@ const App: React.FC = () => {
   const nextStartTimeRef = useRef<number>(0);
   const micStreamRef = useRef<MediaStream | null>(null);
 
+  // Use refs to avoid stale closures in audio processing and tool callbacks
   const translationRef = useRef(defaultTranslation);
   const lockRef = useRef(isLocked);
   const currentVerseRef = useRef(currentVerse);
+  const statusRef = useRef(status);
 
-  useEffect(() => {
-    translationRef.current = defaultTranslation;
-  }, [defaultTranslation]);
+  useEffect(() => { translationRef.current = defaultTranslation; }, [defaultTranslation]);
+  useEffect(() => { lockRef.current = isLocked; }, [isLocked]);
+  useEffect(() => { currentVerseRef.current = currentVerse; }, [currentVerse]);
+  useEffect(() => { statusRef.current = status; }, [status]);
 
+  // Sync state to the model when critical flags change
   useEffect(() => {
-    lockRef.current = isLocked;
-  }, [isLocked]);
-
-  useEffect(() => {
-    currentVerseRef.current = currentVerse;
-  }, [currentVerse]);
+    if (sessionPromiseRef.current && status === SessionStatus.LISTENING) {
+      sessionPromiseRef.current.then(session => {
+        session.sendRealtimeInput({ 
+          parts: [{ text: `[SYSTEM_SYNC] Manual Lock is ${isLocked ? 'ON' : 'OFF'}. Current Reference: ${currentVerse?.reference || 'None'}.` }] 
+        });
+      }).catch(() => {});
+    }
+  }, [isLocked, status, currentVerse?.reference]);
 
   useEffect(() => {
     const checkAuth = async () => {
@@ -129,14 +135,17 @@ const App: React.FC = () => {
             const scriptProcessor = inputCtx.createScriptProcessor(4096, 1, 1);
             
             scriptProcessor.onaudioprocess = (event) => {
-              const inputData = event.inputBuffer.getChannelData(0);
-              let sum = 0;
-              for (let i = 0; i < inputData.length; i++) {
-                sum += inputData[i] * inputData[i];
-              }
-              const rms = Math.sqrt(sum / inputData.length);
-              setAudioVolume(rms);
+              // Critical: Use statusRef to check active state, NOT stale 'status' variable
+              if (statusRef.current !== SessionStatus.LISTENING) return;
 
+              const inputData = event.inputBuffer.getChannelData(0);
+              
+              // Calculate volume for UI waveform
+              let sum = 0;
+              for (let i = 0; i < inputData.length; i++) sum += inputData[i] * inputData[i];
+              setAudioVolume(Math.sqrt(sum / inputData.length));
+
+              // Encode and send PCM data
               const l = inputData.length;
               const int16 = new Int16Array(l);
               for (let i = 0; i < l; i++) int16[i] = inputData[i] * 32768;
@@ -144,9 +153,12 @@ const App: React.FC = () => {
                 data: encode(new Uint8Array(int16.buffer)),
                 mimeType: 'audio/pcm;rate=16000',
               };
-              sessionPromise.then((session: any) => {
-                session.sendRealtimeInput({ media: pcmBlob });
-              }).catch(() => {});
+              
+              if (sessionPromiseRef.current) {
+                sessionPromiseRef.current.then((session: any) => {
+                  session.sendRealtimeInput({ media: pcmBlob });
+                }).catch(() => {});
+              }
             };
             source.connect(scriptProcessor);
             scriptProcessor.connect(inputCtx.destination);
@@ -155,9 +167,9 @@ const App: React.FC = () => {
             if (message.toolCall) {
               for (const fc of message.toolCall.functionCalls) {
                 if (fc.name === 'updateVerseDisplay') {
-                  // ONLY update if NOT manually locked
+                  const args = fc.args as any;
+                  // Only update if not locked or if it's a direct user query (the model handles logic, but we enforce here)
                   if (!lockRef.current) {
-                    const args = fc.args as any;
                     setCurrentVerse({
                       reference: args.reference || '...',
                       text: args.text || '...',
@@ -166,7 +178,7 @@ const App: React.FC = () => {
                   }
                   sessionPromise.then((session: any) => {
                     session.sendToolResponse({
-                      functionResponses: [{ id: fc.id, name: fc.name, response: { status: lockRef.current ? "ignored_locked" : "displayed" } }]
+                      functionResponses: { id: fc.id, name: fc.name, response: { result: lockRef.current ? "update_blocked_by_manual_lock" : "success" } }
                     });
                   });
                 } else if (fc.name === 'setTranslation') {
@@ -175,12 +187,14 @@ const App: React.FC = () => {
                   setDefaultTranslation(newTranslation);
                   sessionPromise.then((session: any) => {
                     session.sendToolResponse({
-                      functionResponses: [{ id: fc.id, name: fc.name, response: { currentTranslation: newTranslation } }]
+                      functionResponses: { id: fc.id, name: fc.name, response: { currentTranslation: newTranslation } }
                     });
                   });
                 }
               }
             }
+            
+            // Handle Model Audio Output
             const audioData = message.serverContent?.modelTurn?.parts?.find(p => p.inlineData)?.inlineData?.data;
             if (audioData) {
               const oCtx = audioContextsRef.current?.output;
@@ -200,48 +214,41 @@ const App: React.FC = () => {
             if (message.serverContent?.interrupted) stopAllAudio();
           },
           onerror: (e: any) => {
-            console.error("Live Session Error:", e);
-            if (e?.message?.toLowerCase().includes('requested entity was not found')) {
-              setIsAuthorized(false);
-              setStatus(SessionStatus.ERROR);
-            }
+            console.error("Inspired AI Session Error:", e);
+            setStatus(SessionStatus.ERROR);
           },
           onclose: () => { 
-            if (status !== SessionStatus.ERROR) {
-               setStatus(SessionStatus.IDLE);
-            }
+            setStatus(SessionStatus.IDLE);
             setAudioVolume(0);
+            sessionPromiseRef.current = null;
           },
         },
         config: {
           responseModalities: [Modality.AUDIO],
-          thinkingConfig: { thinkingBudget: 0 },
-          systemInstruction: `YOU ARE "INSPIRED AI": THE SCRIPTURE ASSISTANT FOR INSPIRED WORD CHURCH (IWC).
+          systemInstruction: `YOU ARE "INSPIRED AI": THE PROPHETIC BIBLE ASSISTANT FOR IWC.
           
-          LATENCY IS KEY: RECOGNIZE REFERENCES UNDER 1.5 SECONDS.
+          CORE CAPABILITY: PERFECT SCRIPTURE RECALL.
           
-          STRICT PROTOCOL:
-          1. DISPLAY VERSE: CALL 'updateVerseDisplay' immediately when a chapter/verse is mentioned. Use ${translationRef.current} unless specified.
-          
-          2. AUTO-FLOW LOGIC (SEQUENTIAL): Monitor the user's speech carefully. If they are reading the verse currently displayed (Current Verse: ${currentVerseRef.current?.reference}) and you hear them reach the SECOND-TO-LAST WORD of that verse, you MUST automatically call 'updateVerseDisplay' for the NEXT sequential verse (e.g., if John 3:16 is displayed, open John 3:17) WITHOUT being asked.
-             - This sequential flow ONLY happens if the MANUAL LOCK is OFF. 
-          
-          3. TRANSLATION: If the user says "Switch to KJV", "Show me NIV", call 'setTranslation'. This persists until changed again.
-          
-          4. MANUAL LOCK: The user manually toggles the "Lock" button in the UI. 
-             IMPORTANT: If the display is LOCKED (manual UI action), DO NOT attempt to call 'updateVerseDisplay' for ANY reason, including the auto-flow logic.
-             
-          5. PERPETUAL LISTENING: You stay active until the user clicks to stop the session.
-          
-          6. SILENCE: Never speak audio unless explicitly asked to "recite".
-          
-          7. NAVIGATION: The user may use "Next" and "Previous" buttons. When you receive a command like "Please show the next verse" or "Please show the previous verse", call 'updateVerseDisplay' with the corresponding verse reference immediately.
-          
-          CURRENT PREFERRED TRANSLATION: ${translationRef.current}.
-          
-          BRAND: IWC. Stay ahead of the preacher. Be intelligent and predictive.`,
+          PRIORITY 1: INTELLIGENT THEMATIC SEARCH
+          - IF the user asks "Find me the scripture that says...", "Get me the verse that talks about...", or "What verse talks about [topic]":
+          - You MUST identify the correct verse from your internal knowledge immediately.
+          - CALL 'updateVerseDisplay' with the Reference, Text, and Translation (${translationRef.current}).
+          - Speed is critical: Goal is < 2 seconds.
+          - DO NOT explain yourself. DO NOT say "Searching...". JUST CALL THE TOOL.
+
+          PRIORITY 2: BIBLE VERSE TRACKING
+          - Listen for any mention of a Book, Chapter, or Verse.
+          - Update the display instantly when detected.
+
+          PRIORITY 3: PREDICTIVE AUTO-ADVANCE
+          - If the user is reading the current verse (${currentVerseRef.current?.reference || 'none'}):
+          - TRIGGER: At the exact moment they speak the SECOND-TO-LAST WORD, call 'updateVerseDisplay' for the NEXT sequential verse.
+          - EXCEPTION: Ignore this if "Manual Lock" is ON.
+
+          TONE: Invisible. Helpful. Lightning Fast. Accurate.
+          Never speak audio unless specifically asked to recite or explain something.`,
           tools: [{ functionDeclarations: [updateVerseDisplayFunction, setTranslationFunction] }],
-          speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } },
+          speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Zephyr' } } },
         },
       });
       sessionPromiseRef.current = sessionPromise;
@@ -253,34 +260,31 @@ const App: React.FC = () => {
 
   const stopSession = () => {
     if (sessionPromiseRef.current) {
-      sessionPromiseRef.current.then((s: any) => { 
-        try { s.close(); } catch (e) {} 
-      });
+      sessionPromiseRef.current.then((s: any) => { try { s.close(); } catch (e) {} });
     }
-    if (micStreamRef.current) {
-      micStreamRef.current.getTracks().forEach(t => t.stop());
-    }
+    if (micStreamRef.current) micStreamRef.current.getTracks().forEach(t => t.stop());
     if (audioContextsRef.current) {
       audioContextsRef.current.input.close().catch(() => {});
       audioContextsRef.current.output.close().catch(() => {});
     }
     setAudioVolume(0);
     setStatus(SessionStatus.IDLE);
+    sessionPromiseRef.current = null;
   };
 
   const handleNext = () => {
     if (sessionPromiseRef.current && currentVerse) {
       sessionPromiseRef.current.then(session => {
-        session.send({ parts: [{ text: `Please show the next verse after ${currentVerse.reference}.` }] });
-      });
+        session.sendRealtimeInput({ parts: [{ text: `User request: Show the next verse after ${currentVerse.reference}.` }] });
+      }).catch(err => console.error(err));
     }
   };
 
   const handlePrev = () => {
     if (sessionPromiseRef.current && currentVerse) {
       sessionPromiseRef.current.then(session => {
-        session.send({ parts: [{ text: `Please show the previous verse before ${currentVerse.reference}.` }] });
-      });
+        session.sendRealtimeInput({ parts: [{ text: `User request: Show the previous verse before ${currentVerse.reference}.` }] });
+      }).catch(err => console.error(err));
     }
   };
 
@@ -292,10 +296,10 @@ const App: React.FC = () => {
     try {
       const res = await ai.models.generateContent({
         model: TTS_MODEL,
-        contents: [{ parts: [{ text: `Reading ${currentVerse.reference} in the ${currentVerse.translation} translation: ${currentVerse.text}` }] }],
+        contents: [{ parts: [{ text: `Reading ${currentVerse.reference}: ${currentVerse.text}` }] }],
         config: { 
           responseModalities: [Modality.AUDIO], 
-          speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } } 
+          speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Zephyr' } } } 
         },
       });
       const data = res.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
@@ -305,10 +309,8 @@ const App: React.FC = () => {
         const source = audioCtx.createBufferSource();
         source.buffer = buffer;
         source.connect(audioCtx.destination);
-
         const words = currentVerse.text.split(/\s+/);
         const durationPerWord = (buffer.duration * 0.85) / words.length;
-        
         const highlightInterval = setInterval(() => {
           setActiveWordIndex(prev => {
             const nextIdx = prev + 1;
@@ -317,7 +319,6 @@ const App: React.FC = () => {
             return prev;
           });
         }, durationPerWord * 1000);
-
         source.onended = () => {
           clearInterval(highlightInterval);
           setIsReadingAloud(false);
@@ -327,7 +328,6 @@ const App: React.FC = () => {
         source.start();
       } else {
         setIsReadingAloud(false);
-        setActiveWordIndex(-1);
       }
     } catch (err) {
       setIsReadingAloud(false);
@@ -335,29 +335,13 @@ const App: React.FC = () => {
     }
   };
 
-  if (isAuthorized === null) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-[#050506]">
-        <div className="w-10 h-10 border-4 border-[#a34981]/20 border-t-[#a34981] rounded-full animate-spin"></div>
-      </div>
-    );
-  }
-
+  if (isAuthorized === null) return <div className="min-h-screen bg-[#050506]" />;
   if (isAuthorized === false) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center p-8 bg-[#050506] text-white">
-        <div className="max-w-md w-full text-center space-y-10 animate-in fade-in zoom-in duration-1000">
+        <div className="max-w-md w-full text-center space-y-10">
           <IWCLogo className="w-40 h-40 mx-auto" />
-          <div className="space-y-4">
-            <h1 className="text-4xl font-serif font-bold tracking-tight text-white">Inspired Presence</h1>
-            <p className="text-zinc-500 text-sm leading-relaxed tracking-wide uppercase font-medium">
-              Activate your IWC session to begin.
-            </p>
-          </div>
-          <button 
-            onClick={handleAuthorize} 
-            className="w-full py-5 bg-[#a34981] hover:bg-[#c25a9b] transition-all rounded-2xl font-black uppercase text-xs tracking-[0.3em] shadow-[0_0_30px_-5px_rgba(163,73,129,0.4)] active:scale-95"
-          >
+          <button onClick={handleAuthorize} className="w-full py-5 bg-[#a34981] rounded-2xl font-black uppercase text-xs tracking-[0.3em]">
             Activate Session
           </button>
         </div>
@@ -369,16 +353,15 @@ const App: React.FC = () => {
     <div className="h-screen max-h-screen flex flex-col bg-[#050506] overflow-hidden">
       <header className="p-6 flex justify-between items-center z-20">
         <div className="flex items-center space-x-4">
-           <div className={`w-2 h-2 rounded-full transition-all duration-700 ${status === SessionStatus.LISTENING ? 'bg-[#a34981] shadow-[0_0_12px_#a34981] animate-pulse' : 'bg-zinc-800'}`}></div>
-           <h1 className="text-[10px] font-black tracking-[0.4em] uppercase text-zinc-600">IWC Live AI</h1>
+           <div className={`w-2 h-2 rounded-full ${status === SessionStatus.LISTENING ? 'bg-[#a34981] animate-pulse' : 'bg-zinc-800'}`} />
+           <h1 className="text-[10px] font-black tracking-[0.4em] uppercase text-zinc-600">Inspired AI Live</h1>
         </div>
         {status === SessionStatus.ERROR && (
-           <button onClick={() => setIsAuthorized(false)} className="text-[9px] text-red-900/80 font-bold uppercase tracking-widest border border-red-900/20 px-3 py-1 rounded-full hover:bg-red-900/10">
-             Reset
+           <button onClick={() => window.location.reload()} className="text-[9px] text-red-900 font-bold uppercase tracking-widest px-3 py-1 rounded-full border border-red-900/20">
+             Reconnect
            </button>
         )}
       </header>
-
       <main className="flex-1 flex flex-col p-4 sm:p-6 md:p-8 overflow-hidden min-h-0">
         <DisplayScreen 
           verse={currentVerse} 
@@ -393,12 +376,8 @@ const App: React.FC = () => {
           audioVolume={audioVolume}
         />
       </main>
-
-      <footer className="p-4 flex flex-col items-center">
-        <AnimatedMic 
-          status={status} 
-          onClick={status === SessionStatus.LISTENING ? stopSession : startSession} 
-        />
+      <footer className="p-4">
+        <AnimatedMic status={status} onClick={status === SessionStatus.LISTENING ? stopSession : startSession} />
       </footer>
     </div>
   );

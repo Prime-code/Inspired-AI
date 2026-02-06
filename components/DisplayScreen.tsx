@@ -53,7 +53,34 @@ const DisplayScreen: React.FC<DisplayScreenProps> = ({
   };
 
   const words = verse?.text.split(/\s+/) || [];
-  const bars = Array.from({ length: 11 });
+  
+  // Enhanced Waveform logic: 32 bars for a nuanced look
+  const barCount = 32;
+  const renderWaveform = () => {
+    return Array.from({ length: barCount }).map((_, i) => {
+      const center = barCount / 2;
+      const distFromCenter = Math.abs(i - center);
+      // Cosine distribution for a natural wave shape
+      const factor = Math.cos((distFromCenter / center) * (Math.PI / 2));
+      
+      // Amplitude with subtle randomized jitter for "organic" feel
+      const jitter = 0.8 + Math.random() * 0.4;
+      const height = Math.max(3, audioVolume * 160 * factor * jitter);
+      
+      return (
+        <div 
+          key={i} 
+          className="w-1 mx-[1px] rounded-full bg-[#a34981] transition-all duration-75 ease-out"
+          style={{ 
+            height: `${height}px`, 
+            opacity: 0.15 + (audioVolume * factor * 2),
+            boxShadow: audioVolume > 0.05 ? `0 0 10px rgba(163, 73, 129, ${audioVolume * factor})` : 'none',
+            filter: audioVolume > 0.1 ? `blur(${audioVolume * 2}px)` : 'none'
+          }}
+        ></div>
+      );
+    });
+  };
 
   return (
     <div className={`flex-1 w-full relative overflow-hidden rounded-[2.5rem] border transition-all duration-700 flex flex-col min-h-0 ${
@@ -90,9 +117,9 @@ const DisplayScreen: React.FC<DisplayScreenProps> = ({
         </div>
       )}
 
-      {/* Centered Feedback */}
+      {/* Centered Feedback & Enhanced Visualizer */}
       {isListening && (
-        <div className="absolute top-6 left-1/2 -translate-x-1/2 z-20 flex flex-col items-center space-y-2 pointer-events-none">
+        <div className="absolute top-6 left-1/2 -translate-x-1/2 z-20 flex flex-col items-center space-y-4 pointer-events-none w-full px-12">
           <div className="flex items-center space-x-2 px-3 py-1 rounded-full bg-black/60 backdrop-blur-xl border border-[#a34981]/20">
             <div className={`w-1 h-1 rounded-full ${isLocked ? 'bg-zinc-700' : 'bg-[#a34981] animate-pulse'}`}></div>
             <span className={`text-[8px] font-black uppercase tracking-[0.4em] ${isLocked ? 'text-zinc-600' : 'text-[#a34981]'}`}>
@@ -100,21 +127,10 @@ const DisplayScreen: React.FC<DisplayScreenProps> = ({
             </span>
           </div>
           
-          {/* Audio Visualization */}
+          {/* Nuanced Audio Visualization */}
           {!isLocked && (
-            <div className="flex items-end justify-center space-x-0.5 h-4 overflow-hidden">
-              {bars.map((_, i) => {
-                const centerOffset = Math.abs(i - 5);
-                const multiplier = 1 - (centerOffset * 0.15);
-                const height = Math.max(2, audioVolume * 150 * multiplier);
-                return (
-                  <div 
-                    key={i} 
-                    className="w-0.5 rounded-full bg-[#a34981] transition-all duration-75"
-                    style={{ height: `${height}px`, opacity: 0.1 + (audioVolume * 2) }}
-                  ></div>
-                );
-              })}
+            <div className="flex items-center justify-center h-12 w-full max-w-xs overflow-hidden">
+              {renderWaveform()}
             </div>
           )}
         </div>
@@ -123,7 +139,7 @@ const DisplayScreen: React.FC<DisplayScreenProps> = ({
       {/* Main Content Area - Optimized for Fit */}
       <div 
         ref={scrollAreaRef}
-        className="flex-1 flex flex-col relative z-10 overflow-y-auto scrollbar-hide px-6 py-16 sm:px-12 md:px-16 min-h-0"
+        className="flex-1 flex flex-col relative z-10 overflow-y-auto scrollbar-hide px-6 py-20 sm:px-12 md:px-16 min-h-0"
       >
         <div className="min-h-full flex flex-col items-center justify-center text-center">
           {verse ? (
