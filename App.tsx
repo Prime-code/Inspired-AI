@@ -55,6 +55,7 @@ const App: React.FC = () => {
 
   const translationRef = useRef(defaultTranslation);
   const lockRef = useRef(isLocked);
+  const currentVerseRef = useRef(currentVerse);
 
   useEffect(() => {
     translationRef.current = defaultTranslation;
@@ -63,6 +64,10 @@ const App: React.FC = () => {
   useEffect(() => {
     lockRef.current = isLocked;
   }, [isLocked]);
+
+  useEffect(() => {
+    currentVerseRef.current = currentVerse;
+  }, [currentVerse]);
 
   useEffect(() => {
     const checkAuth = async () => {
@@ -217,15 +222,22 @@ const App: React.FC = () => {
           
           STRICT PROTOCOL:
           1. DISPLAY VERSE: CALL 'updateVerseDisplay' immediately when a chapter/verse is mentioned. Use ${translationRef.current} unless specified.
-          2. TRANSLATION: If the user says "Switch to KJV", "Show me NIV", call 'setTranslation'. This persists until changed again.
-          3. MANUAL CONTROLS: The user manually toggles the "Lock" button in the UI. 
-             IMPORTANT: If the display is LOCKED (manual UI action), DO NOT attempt to call 'updateVerseDisplay' until it is unlocked.
-          4. PERPETUAL LISTENING: You stay active until the user clicks to stop the session.
-          5. SILENCE: Never speak audio unless asked to "recite".
+          
+          2. AUTO-FLOW LOGIC (SEQUENTIAL): Monitor the user's speech carefully. If they are reading the verse currently displayed (Current Verse: ${currentVerseRef.current?.reference}) and you hear them reach the SECOND-TO-LAST WORD of that verse, you MUST automatically call 'updateVerseDisplay' for the NEXT sequential verse (e.g., if John 3:16 is displayed, open John 3:17) WITHOUT being asked.
+             - This sequential flow ONLY happens if the MANUAL LOCK is OFF. 
+          
+          3. TRANSLATION: If the user says "Switch to KJV", "Show me NIV", call 'setTranslation'. This persists until changed again.
+          
+          4. MANUAL LOCK: The user manually toggles the "Lock" button in the UI. 
+             IMPORTANT: If the display is LOCKED (manual UI action), DO NOT attempt to call 'updateVerseDisplay' for ANY reason, including the auto-flow logic.
+             
+          5. PERPETUAL LISTENING: You stay active until the user clicks to stop the session.
+          
+          6. SILENCE: Never speak audio unless explicitly asked to "recite".
           
           CURRENT PREFERRED TRANSLATION: ${translationRef.current}.
           
-          BRAND: IWC. Fast, accurate, and completely responsive to manual user state.`,
+          BRAND: IWC. Stay ahead of the preacher. Be intelligent and predictive.`,
           tools: [{ functionDeclarations: [updateVerseDisplayFunction, setTranslationFunction] }],
           speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } },
         },
@@ -281,7 +293,17 @@ const App: React.FC = () => {
         
         const highlightInterval = setInterval(() => {
           setActiveWordIndex(prev => {
-            if (prev < words.length - 1) return prev + 1;
+            const nextIdx = prev + 1;
+            
+            // PROGRAMMATIC AUTO-FLOW during Recite
+            if (nextIdx === words.length - 1 && !lockRef.current) {
+               // When we reach the second to last word during recite, 
+               // the Live session instruction should ideally pick this up from the audio.
+               // We don't force a tool call here to avoid conflicts, but the model instructions 
+               // now explicitly cover "finishing reading".
+            }
+
+            if (nextIdx < words.length) return nextIdx;
             clearInterval(highlightInterval);
             return prev;
           });
