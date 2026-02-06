@@ -1,0 +1,7 @@
+{
+  "name": "Inspired AI",
+  "description": "An intelligent Bible verse listener that automatically displays and recites verses mentioned in conversation.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
