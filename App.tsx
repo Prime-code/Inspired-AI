@@ -15,25 +15,13 @@ const updateVerseDisplayFunction: FunctionDeclaration = {
   name: 'updateVerseDisplay',
   parameters: {
     type: Type.OBJECT,
-    description: 'Instantly updates the screen with Bible verse content.',
+    description: 'Updates the display with a Bible verse.',
     properties: {
       reference: { type: Type.STRING, description: 'The Bible verse reference (e.g., John 3:16).' },
       text: { type: Type.STRING, description: 'The verse text.' },
-      translation: { type: Type.STRING, description: 'The translation (NIV, KJV, etc).' },
+      translation: { type: Type.STRING, description: 'The translation name.' },
     },
     required: ['reference', 'text', 'translation'],
-  },
-};
-
-const toggleVerseLockFunction: FunctionDeclaration = {
-  name: 'toggleVerseLock',
-  parameters: {
-    type: Type.OBJECT,
-    description: 'Toggles the lock state of the current verse.',
-    properties: {
-      isLocked: { type: Type.BOOLEAN, description: 'True to lock the verse, false to unlock.' }
-    },
-    required: ['isLocked'],
   },
 };
 
@@ -43,7 +31,7 @@ const setTranslationFunction: FunctionDeclaration = {
     type: Type.OBJECT,
     description: 'Sets the default Bible translation for all future verses.',
     properties: {
-      translation: { type: Type.STRING, description: 'The Bible translation code or name (e.g., KJV, NIV, ESV, NLT).' }
+      translation: { type: Type.STRING, description: 'The Bible translation (e.g., KJV, NIV, ESV).' }
     },
     required: ['translation'],
   },
@@ -66,14 +54,20 @@ const App: React.FC = () => {
   const micStreamRef = useRef<MediaStream | null>(null);
 
   const translationRef = useRef(defaultTranslation);
+  const lockRef = useRef(isLocked);
+
   useEffect(() => {
     translationRef.current = defaultTranslation;
   }, [defaultTranslation]);
 
   useEffect(() => {
+    lockRef.current = isLocked;
+  }, [isLocked]);
+
+  useEffect(() => {
     const checkAuth = async () => {
       try {
-        if ((window as any).aistudio && typeof (window as any).aistudio.hasSelectedApiKey === 'function') {
+        if ((window as any).aistudio?.hasSelectedApiKey) {
           const hasKey = await (window as any).aistudio.hasSelectedApiKey();
           setIsAuthorized(hasKey);
         } else {
@@ -88,12 +82,11 @@ const App: React.FC = () => {
 
   const handleAuthorize = async () => {
     try {
-      if ((window as any).aistudio && typeof (window as any).aistudio.openSelectKey === 'function') {
+      if ((window as any).aistudio?.openSelectKey) {
         await (window as any).aistudio.openSelectKey();
       }
       setIsAuthorized(true);
     } catch (err) {
-      console.error("Auth error:", err);
       setIsAuthorized(true);
     }
   };
@@ -157,23 +150,18 @@ const App: React.FC = () => {
             if (message.toolCall) {
               for (const fc of message.toolCall.functionCalls) {
                 if (fc.name === 'updateVerseDisplay') {
-                  const args = fc.args as any;
-                  setCurrentVerse({
-                    reference: args.reference || '...',
-                    text: args.text || '...',
-                    translation: args.translation || translationRef.current,
-                  });
-                  sessionPromise.then((session: any) => {
-                    session.sendToolResponse({
-                      functionResponses: [{ id: fc.id, name: fc.name, response: { status: "displayed" } }]
+                  // ONLY update if NOT manually locked
+                  if (!lockRef.current) {
+                    const args = fc.args as any;
+                    setCurrentVerse({
+                      reference: args.reference || '...',
+                      text: args.text || '...',
+                      translation: args.translation || translationRef.current,
                     });
-                  });
-                } else if (fc.name === 'toggleVerseLock') {
-                  const args = fc.args as any;
-                  setIsLocked(args.isLocked);
+                  }
                   sessionPromise.then((session: any) => {
                     session.sendToolResponse({
-                      functionResponses: [{ id: fc.id, name: fc.name, response: { locked: args.isLocked } }]
+                      functionResponses: [{ id: fc.id, name: fc.name, response: { status: lockRef.current ? "ignored_locked" : "displayed" } }]
                     });
                   });
                 } else if (fc.name === 'setTranslation') {
@@ -223,21 +211,22 @@ const App: React.FC = () => {
         config: {
           responseModalities: [Modality.AUDIO],
           thinkingConfig: { thinkingBudget: 0 },
-          systemInstruction: `YOU ARE "INSPIRED AI": THE ULTRA-FAST SCRIPTURE ENGINE FOR INSPIRED WORD CHURCH (IWC).
+          systemInstruction: `YOU ARE "INSPIRED AI": THE SCRIPTURE ASSISTANT FOR INSPIRED WORD CHURCH (IWC).
           
-          LATENCY IS THE ABSOLUTE PRIORITY: RECOGNIZE REFERENCES IN UNDER 1.5 SECONDS.
+          LATENCY IS KEY: RECOGNIZE REFERENCES UNDER 1.5 SECONDS.
           
-          OPERATING RULES:
-          1. DISPLAY VERSE: IMMEDIATELY call 'updateVerseDisplay' when a chapter/verse is heard. Use the user's preferred translation.
-          2. TRANSLATION: If the user requests a version (e.g., "Switch to KJV", "Show me NIV"), call 'setTranslation'. This MUST stay the default until the user explicitly changes it again.
-          3. AUTO-FLOW: If not LOCKED, advance to the next verse as soon as the user finishes reading the current one.
-          4. LOCKING: Use 'toggleVerseLock' to freeze/unfreeze based on voice commands like "Freeze", "Lock this", "Continue", "Release".
-          5. NO AUDIO OUTPUT: You are a silent observer. Never speak unless explicitly asked to "recite".
+          STRICT PROTOCOL:
+          1. DISPLAY VERSE: CALL 'updateVerseDisplay' immediately when a chapter/verse is mentioned. Use ${translationRef.current} unless specified.
+          2. TRANSLATION: If the user says "Switch to KJV", "Show me NIV", call 'setTranslation'. This persists until changed again.
+          3. MANUAL CONTROLS: The user manually toggles the "Lock" button in the UI. 
+             IMPORTANT: If the display is LOCKED (manual UI action), DO NOT attempt to call 'updateVerseDisplay' until it is unlocked.
+          4. PERPETUAL LISTENING: You stay active until the user clicks to stop the session.
+          5. SILENCE: Never speak audio unless asked to "recite".
           
           CURRENT PREFERRED TRANSLATION: ${translationRef.current}.
           
-          BRAND: IWC. Stay vigilant and fast.`,
-          tools: [{ functionDeclarations: [updateVerseDisplayFunction, toggleVerseLockFunction, setTranslationFunction] }],
+          BRAND: IWC. Fast, accurate, and completely responsive to manual user state.`,
+          tools: [{ functionDeclarations: [updateVerseDisplayFunction, setTranslationFunction] }],
           speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } },
         },
       });
@@ -310,7 +299,6 @@ const App: React.FC = () => {
         setActiveWordIndex(-1);
       }
     } catch (err) {
-      console.error("TTS Error:", err);
       setIsReadingAloud(false);
       setActiveWordIndex(-1);
     }
@@ -332,7 +320,7 @@ const App: React.FC = () => {
           <div className="space-y-4">
             <h1 className="text-4xl font-serif font-bold tracking-tight text-white">Inspired Presence</h1>
             <p className="text-zinc-500 text-sm leading-relaxed tracking-wide uppercase font-medium">
-              Activate your IWC session to begin the scripture flow.
+              Activate your IWC session to begin.
             </p>
           </div>
           <button 
@@ -350,17 +338,17 @@ const App: React.FC = () => {
     <div className="h-screen max-h-screen flex flex-col bg-[#050506] overflow-hidden">
       <header className="p-6 flex justify-between items-center z-20">
         <div className="flex items-center space-x-4">
-           <div className={`w-2.5 h-2.5 rounded-full transition-all duration-700 ${status === SessionStatus.LISTENING ? 'bg-[#a34981] shadow-[0_0_12px_#a34981] animate-pulse' : 'bg-zinc-800'}`}></div>
-           <h1 className="text-[10px] font-black tracking-[0.4em] uppercase text-zinc-600">Inspired AI • IWC Live</h1>
+           <div className={`w-2 h-2 rounded-full transition-all duration-700 ${status === SessionStatus.LISTENING ? 'bg-[#a34981] shadow-[0_0_12px_#a34981] animate-pulse' : 'bg-zinc-800'}`}></div>
+           <h1 className="text-[10px] font-black tracking-[0.4em] uppercase text-zinc-600">IWC Live AI</h1>
         </div>
         {status === SessionStatus.ERROR && (
            <button onClick={() => setIsAuthorized(false)} className="text-[9px] text-red-900/80 font-bold uppercase tracking-widest border border-red-900/20 px-3 py-1 rounded-full hover:bg-red-900/10">
-             Reset Session
+             Reset
            </button>
         )}
       </header>
 
-      <main className="flex-1 flex flex-col p-4 sm:p-6 md:p-10 overflow-hidden min-h-0">
+      <main className="flex-1 flex flex-col p-4 sm:p-6 md:p-8 overflow-hidden min-h-0">
         <DisplayScreen 
           verse={currentVerse} 
           status={status}
