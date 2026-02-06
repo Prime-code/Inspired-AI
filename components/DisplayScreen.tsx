@@ -10,6 +10,8 @@ interface DisplayScreenProps {
   activeWordIndex?: number;
   isLocked?: boolean;
   onToggleLock?: () => void;
+  onNext?: () => void;
+  onPrev?: () => void;
   audioVolume?: number;
 }
 
@@ -21,6 +23,8 @@ const DisplayScreen: React.FC<DisplayScreenProps> = ({
   activeWordIndex = -1,
   isLocked = false,
   onToggleLock,
+  onNext,
+  onPrev,
   audioVolume = 0
 }) => {
   const isListening = status === SessionStatus.LISTENING;
@@ -157,13 +161,35 @@ const DisplayScreen: React.FC<DisplayScreenProps> = ({
                 </div>
               </div>
 
-              {/* Reference */}
-              <div className="flex flex-col items-center space-y-3 pt-2">
+              {/* Reference with Navigation */}
+              <div className="flex flex-col items-center space-y-4 pt-2">
                 <div className="h-px w-20 bg-gradient-to-r from-transparent via-[#a34981]/20 to-transparent"></div>
-                <p className="font-bold text-zinc-500 tracking-[0.5em] uppercase"
-                   style={{ fontSize: 'clamp(0.8rem, 1.8vw, 1.2rem)' }}>
-                  {verse.reference}
-                </p>
+                <div className="flex items-center space-x-8">
+                  <button 
+                    onClick={onPrev}
+                    className="p-3 rounded-full hover:bg-white/5 transition-all text-zinc-600 hover:text-zinc-200 active:scale-90 group"
+                    title="Previous Verse"
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M15 19l-7-7 7-7" />
+                    </svg>
+                  </button>
+
+                  <p className="font-bold text-zinc-500 tracking-[0.5em] uppercase whitespace-nowrap"
+                     style={{ fontSize: 'clamp(0.8rem, 1.8vw, 1.2rem)' }}>
+                    {verse.reference}
+                  </p>
+
+                  <button 
+                    onClick={onNext}
+                    className="p-3 rounded-full hover:bg-white/5 transition-all text-zinc-600 hover:text-zinc-200 active:scale-90 group"
+                    title="Next Verse"
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 5l7 7-7 7" />
+                    </svg>
+                  </button>
+                </div>
               </div>
 
             </div>

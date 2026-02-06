@@ -235,6 +235,8 @@ const App: React.FC = () => {
           
           6. SILENCE: Never speak audio unless explicitly asked to "recite".
           
+          7. NAVIGATION: The user may use "Next" and "Previous" buttons. When you receive a command like "Please show the next verse" or "Please show the previous verse", call 'updateVerseDisplay' with the corresponding verse reference immediately.
+          
           CURRENT PREFERRED TRANSLATION: ${translationRef.current}.
           
           BRAND: IWC. Stay ahead of the preacher. Be intelligent and predictive.`,
@@ -266,6 +268,22 @@ const App: React.FC = () => {
     setStatus(SessionStatus.IDLE);
   };
 
+  const handleNext = () => {
+    if (sessionPromiseRef.current && currentVerse) {
+      sessionPromiseRef.current.then(session => {
+        session.send({ parts: [{ text: `Please show the next verse after ${currentVerse.reference}.` }] });
+      });
+    }
+  };
+
+  const handlePrev = () => {
+    if (sessionPromiseRef.current && currentVerse) {
+      sessionPromiseRef.current.then(session => {
+        session.send({ parts: [{ text: `Please show the previous verse before ${currentVerse.reference}.` }] });
+      });
+    }
+  };
+
   const handleReadAloud = async () => {
     if (!currentVerse || isReadingAloud) return;
     setIsReadingAloud(true);
@@ -294,15 +312,6 @@ const App: React.FC = () => {
         const highlightInterval = setInterval(() => {
           setActiveWordIndex(prev => {
             const nextIdx = prev + 1;
-            
-            // PROGRAMMATIC AUTO-FLOW during Recite
-            if (nextIdx === words.length - 1 && !lockRef.current) {
-               // When we reach the second to last word during recite, 
-               // the Live session instruction should ideally pick this up from the audio.
-               // We don't force a tool call here to avoid conflicts, but the model instructions 
-               // now explicitly cover "finishing reading".
-            }
-
             if (nextIdx < words.length) return nextIdx;
             clearInterval(highlightInterval);
             return prev;
@@ -379,6 +388,8 @@ const App: React.FC = () => {
           activeWordIndex={activeWordIndex}
           isLocked={isLocked}
           onToggleLock={() => setIsLocked(!isLocked)}
+          onNext={handleNext}
+          onPrev={handlePrev}
           audioVolume={audioVolume}
         />
       </main>
